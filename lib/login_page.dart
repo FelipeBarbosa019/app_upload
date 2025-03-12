@@ -51,17 +51,14 @@ class _LoginScreenState extends State<LoginPage> {
         return;
       }
 
-      // Acesse o ID do usuário logado
       final userId = Supabase.instance.client.auth.currentUser?.id;
 
-      // Verifique se o userId existe
       if (userId != null) {
-        // Busque o perfil do usuário na tabela 'profiles'
         final profileResponse = await Supabase.instance.client
             .from('profiles')
             .select('role')
             .eq('id', userId)
-            .single(); // Espera apenas uma linha como resultado
+            .single();
 
         if (profileResponse['role'] == null) {
           _showMessage('Erro ao buscar o tipo de perfil', isError: true);
@@ -70,9 +67,7 @@ class _LoginScreenState extends State<LoginPage> {
 
         final role = profileResponse['role'];
 
-        // Verifique o valor do campo role
         if (role == 'admin') {
-          // Se for admin, redireciona para a página de admin
           Navigator.push(
             context,
             MaterialPageRoute(
@@ -80,7 +75,6 @@ class _LoginScreenState extends State<LoginPage> {
             ),
           );
         } else {
-          // Se não for admin, redireciona para a página normal
           Navigator.push(
             context,
             MaterialPageRoute(
