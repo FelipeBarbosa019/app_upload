@@ -1,9 +1,10 @@
 import 'dart:io';
-
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -28,37 +29,30 @@ class _HomeUserPageState extends State<HomeUserPage> {
   }
 
   Future<void> _loadDocuments() async {
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
     try {
       final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) {
-        throw Exception('Usuário não autenticado');
-      }
-      final userId = user.id;
+      if (user == null) throw Exception('Usuário não autenticado');
 
       final response = await Supabase.instance.client
           .from('documents')
           .select()
-          .eq('user_id', userId);
+          .eq('user_id', user.id);
 
-      if (response.isEmpty) {
-        throw Exception('Nenhum documento encontrado');
-      }
+      if (response.isEmpty) throw Exception('Nenhum documento encontrado');
 
       setState(() {
-        _documents = response.map((doc) {
-          return {
-            'id': doc['id'],
-            'name': doc['file_name'],
-            'url': doc['file_url'],
-            'isImage': _isImageFile(doc['file_name']),
-            'size': doc['size'],
-            'type': doc['file_type'],
-          };
-        }).toList();
+        _documents = response
+            .map((doc) => {
+                  'id': doc['id'],
+                  'name': doc['file_name'],
+                  'url': doc['file_url'],
+                  'isImage': _isImageFile(doc['file_name']),
+                  'size': doc['size'],
+                  'type': doc['file_type'],
+                })
+            .toList();
 
         context.read<DocumentTabController>().updateHasDocuments(_documents);
       });
@@ -68,43 +62,34 @@ class _HomeUserPageState extends State<HomeUserPage> {
         SnackBar(content: Text('Erro ao carregar documentos: $e')),
       );
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      setState(() => _isLoading = false);
     }
   }
 
   bool _isImageFile(String fileName) {
     final ext = fileName.split('.').last.toLowerCase();
-    return ext == 'jpg' || ext == 'jpeg' || ext == 'png' || ext == 'gif';
+    return ['jpg', 'jpeg', 'png', 'gif'].contains(ext);
   }
 
   Future<void> _uploadFile(
       String tabTitle, File fileToUpload, String fileName) async {
-    try {
-      setState(() {
-        _isLoading = true;
-      });
+    setState(() => _isLoading = true);
 
-      final uploadResponse = await Supabase.instance.client.storage
+    try {
+      await Supabase.instance.client.storage
           .from('uploads')
           .upload(fileName, fileToUpload);
-
-      print('Arquivo enviado com sucesso: $uploadResponse');
-
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) {
-        throw Exception('Usuário não autenticado');
-      }
-      final userId = user.id;
 
       final fileUrl = Supabase.instance.client.storage
           .from('uploads')
           .getPublicUrl(fileName);
 
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) throw Exception('Usuário não autenticado');
+
       await Supabase.instance.client.from('documents').insert([
         {
-          'user_id': userId,
+          'user_id': user.id,
           'file_name': fileName,
           'file_url': fileUrl,
           'file_type': tabTitle.toLowerCase(),
@@ -113,13 +98,15 @@ class _HomeUserPageState extends State<HomeUserPage> {
         }
       ]);
 
-      _loadDocuments();
-
+      await _loadDocuments();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Arquivo $fileName enviado com sucesso!')),
       );
     } catch (e) {
       print('Erro durante o upload: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro ao enviar arquivo: $e')),
+      );
 
       if (fileName.isNotEmpty) {
         try {
@@ -132,25 +119,17 @@ class _HomeUserPageState extends State<HomeUserPage> {
           print('Erro ao remover arquivo do Supabase Storage: $deleteError');
         }
       }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erro ao enviar arquivo: $e')),
-      );
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      setState(() => _isLoading = false);
     }
   }
 
   Future<void> _takePhoto(String tabTitle) async {
     try {
       final XFile? photo = await _picker.pickImage(source: ImageSource.camera);
-
       if (photo != null) {
         final fileToUpload = File(photo.path);
         final fileName = 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
-
         await _uploadFile(tabTitle, fileToUpload, fileName);
       }
     } catch (e) {
@@ -162,46 +141,75 @@ class _HomeUserPageState extends State<HomeUserPage> {
   }
 
   Future<void> _checkAndRequestPermissions(String tabTitle) async {
-    Permission permission;
-
-    if (Platform.isAndroid) {
-      var androidInfo = await DeviceInfoPlugin().androidInfo;
-      int sdkInt = androidInfo.version.sdkInt;
-
-      if (sdkInt >= 30) {
-        permission = Permission.manageExternalStorage;
-      } else {
-        permission = Permission.storage;
-      }
-    } else {
-      permission = Permission.storage;
-    }
+    Permission permission = Platform.isAndroid &&
+            (await DeviceInfoPlugin().androidInfo).version.sdkInt >= 30
+        ? Permission.manageExternalStorage
+        : Permission.storage;
 
     var status = await permission.status;
-
-    if (!status.isGranted) {
-      status = await permission.request();
-    }
+    if (!status.isGranted) status = await permission.request();
 
     if (status.isGranted) {
       FilePickerResult? result = await FilePicker.platform.pickFiles();
-      if (result != null) {
+      if (result != null && result.files.single.path != null) {
         final file = result.files.single;
-        final fileName = file.name;
-        final filePath = file.path;
-
-        if (filePath != null) {
-          final fileToUpload = File(filePath);
-          await _uploadFile(tabTitle, fileToUpload, fileName);
-        }
+        await _uploadFile(tabTitle, File(file.path!), file.name);
       }
     } else if (status.isPermanentlyDenied) {
       openAppSettings();
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Permissão para acessar o armazenamento foi negada.'),
-        ),
+            content:
+                Text('Permissão para acessar o armazenamento foi negada.')),
+      );
+    }
+  }
+
+  Future<void> _downloadFile(String url, String fileName) async {
+    try {
+      Directory? dir;
+
+      if (Platform.isAndroid) {
+        var status = await Permission.storage.request();
+        if (!status.isGranted) {
+          throw Exception('Permissão de armazenamento negada.');
+        }
+        dir = Directory('/storage/emulated/0/Download');
+      } else if (Platform.isIOS) {
+        dir = await getApplicationDocumentsDirectory();
+      }
+
+      if (dir == null)
+        throw Exception('Diretório de armazenamento não encontrado.');
+
+      final filePath = '${dir.path}/$fileName';
+      final file = File(filePath);
+
+      if (await file.exists()) {
+        await file.delete();
+      }
+
+      final dio = Dio();
+      await dio.download(
+        url,
+        filePath,
+        onReceiveProgress: (received, total) {
+          if (total != -1) {
+            print('Progresso: ${(received / total * 100).toStringAsFixed(0)}%');
+          }
+        },
+      );
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Arquivo $fileName baixado com sucesso!\nLocal: $filePath')),
+      );
+    } catch (e) {
+      print('Erro ao baixar arquivo: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro ao baixar arquivo: $e')),
       );
     }
   }
@@ -233,14 +241,9 @@ class _HomeUserPageState extends State<HomeUserPage> {
                     backgroundColor:
                         tab.hasDocuments ? Colors.green[100] : Colors.yellow[0],
                     headerBuilder: (BuildContext context, bool isExpanded) {
-                      return Container(
-                        color: tab.hasDocuments
-                            ? Colors.green[100]
-                            : Colors.yellow[0],
-                        child: ListTile(
-                          title: Text(tab.title),
-                          tileColor: Colors.transparent,
-                        ),
+                      return ListTile(
+                        title: Text(tab.title),
+                        tileColor: Colors.transparent,
                       );
                     },
                     body: Column(
@@ -304,10 +307,6 @@ class _HomeUserPageState extends State<HomeUserPage> {
               child: Text('Baixar'),
             ),
             const PopupMenuItem(
-              value: 'rename',
-              child: Text('Renomear'),
-            ),
-            const PopupMenuItem(
               value: 'delete',
               child: Text('Excluir'),
             ),
@@ -315,8 +314,6 @@ class _HomeUserPageState extends State<HomeUserPage> {
           onSelected: (value) {
             if (value == 'download') {
               _downloadFile(document['url'], document['name']);
-            } else if (value == 'rename') {
-              _renameFile(document['name'], document['id']);
             } else if (value == 'delete') {
               _deleteFile(document['name'], document['id']);
             }
@@ -339,11 +336,9 @@ class _HomeUserPageState extends State<HomeUserPage> {
   }
 
   Future<void> _deleteFile(String fileName, String documentId) async {
-    try {
-      setState(() {
-        _isLoading = true;
-      });
+    setState(() => _isLoading = true);
 
+    try {
       await Supabase.instance.client.storage.from('uploads').remove([fileName]);
 
       await Supabase.instance.client
@@ -361,90 +356,16 @@ class _HomeUserPageState extends State<HomeUserPage> {
         SnackBar(content: Text('Erro ao excluir arquivo: $e')),
       );
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _renameFile(String oldName, String documentId) async {
-    final newNameController = TextEditingController();
-    final newName = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Alterar nome do arquivo'),
-          content: TextField(
-            controller: newNameController,
-            decoration: const InputDecoration(hintText: 'Novo nome do arquivo'),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancelar'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, newNameController.text),
-              child: const Text('Salvar'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (newName != null && newName.isNotEmpty) {
-      try {
-        setState(() {
-          _isLoading = true;
-        });
-
-        await Supabase.instance.client.storage
-            .from('uploads')
-            .move(oldName, newName);
-
-        await Supabase.instance.client
-            .from('documents')
-            .update({'file_name': newName}).eq('id', documentId);
-
-        await _loadDocuments();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Arquivo renomeado para $newName!')),
-        );
-      } catch (e) {
-        print('Erro ao renomear arquivo: $e');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erro ao renomear arquivo: $e')),
-        );
-      } finally {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _downloadFile(String url, String fileName) async {
-    try {
-      print('Baixando arquivo: $fileName');
-      print('URL: $url');
-    } catch (e) {
-      print('Erro ao baixar arquivo: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erro ao baixar arquivo: $e')),
-      );
+      setState(() => _isLoading = false);
     }
   }
 
   String _formatFileSize(dynamic size) {
     final int fileSize =
         size is int ? size : int.tryParse(size.toString()) ?? 0;
-    if (fileSize < 1024) {
-      return '$fileSize B';
-    } else if (fileSize < 1048576) {
-      return '${(fileSize / 1024).toStringAsFixed(2)} KB';
-    } else {
-      return '${(fileSize / 1048576).toStringAsFixed(2)} MB';
-    }
+    if (fileSize < 1024) return '$fileSize B';
+    if (fileSize < 1048576) return '${(fileSize / 1024).toStringAsFixed(2)} KB';
+    return '${(fileSize / 1048576).toStringAsFixed(2)} MB';
   }
 }
 

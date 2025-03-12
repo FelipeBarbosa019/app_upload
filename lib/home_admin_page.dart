@@ -1,6 +1,8 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'dart:io';
 
@@ -52,7 +54,7 @@ class _HomeAdminPageState extends State<HomeAdminPage> {
     try {
       final documentsResponse = await Supabase.instance.client
           .from('documents')
-          .select('user_id, file_name, file_type, size')
+          .select('id, user_id, file_name, file_type, size')
           .eq('user_id', userId);
 
       setState(() {
@@ -60,6 +62,7 @@ class _HomeAdminPageState extends State<HomeAdminPage> {
 
         for (var file in documentsResponse) {
           _groupedDocuments[userId]!.add({
+            'id': file['id'],
             'name': file['file_name'],
             'url': Supabase.instance.client.storage
                 .from('uploads')
@@ -195,10 +198,6 @@ class _HomeAdminPageState extends State<HomeAdminPage> {
             child: Text('Baixar'),
           ),
           const PopupMenuItem(
-            value: 'rename',
-            child: Text('Renomear'),
-          ),
-          const PopupMenuItem(
             value: 'delete',
             child: Text('Excluir'),
           ),
@@ -206,10 +205,8 @@ class _HomeAdminPageState extends State<HomeAdminPage> {
         onSelected: (value) {
           if (value == 'download') {
             _downloadFile(document['url'], document['name']);
-          } else if (value == 'rename') {
-            _renameFile(document['name']);
           } else if (value == 'delete') {
-            _deleteFile(document['name']);
+            _deleteFile(document['name'], document['id']);
           }
         },
       ),
@@ -221,133 +218,77 @@ class _HomeAdminPageState extends State<HomeAdminPage> {
     return ext == 'jpg' || ext == 'jpeg' || ext == 'png' || ext == 'gif';
   }
 
-  Future<void> _uploadFile() async {
+  Future<void> _deleteFile(String fileName, String documentId) async {
+    setState(() => _isLoading = true);
+
     try {
-      setState(() {
-        _isLoading = true;
-      });
-
-      FilePickerResult? result = await FilePicker.platform.pickFiles();
-      if (result != null) {
-        final file = result.files.single;
-        final fileName = file.name;
-        final filePath = file.path;
-
-        if (filePath != null) {
-          final fileToUpload = File(filePath);
-
-          await Supabase.instance.client.storage
-              .from('uploads')
-              .upload(fileName, fileToUpload);
-
-          await _loadProfiles();
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Arquivo $fileName enviado com sucesso!')),
-          );
-
-          await fileToUpload.delete();
-        }
-      }
-    } catch (e) {
-      print('***** Erro durante o upload: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erro ao enviar arquivo: $e')),
-      );
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _deleteFile(String fileName) async {
-    try {
-      setState(() {
-        _isLoading = true;
-      });
-
       await Supabase.instance.client.storage.from('uploads').remove([fileName]);
 
-      await _loadProfiles();
+      await Supabase.instance.client
+          .from('documents')
+          .delete()
+          .eq('id', documentId);
 
+      await _loadProfiles();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Arquivo $fileName excluído com sucesso!')),
       );
     } catch (e) {
-      print('***** Erro ao excluir arquivo: $e');
+      print('Erro ao excluir arquivo: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Erro ao excluir arquivo: $e')),
       );
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      setState(() => _isLoading = false);
     }
   }
 
   Future<void> _downloadFile(String url, String fileName) async {
     try {
-      print('***** Baixando arquivo: $fileName');
-      print('***** URL: $url');
+      Directory? dir;
+
+      if (Platform.isAndroid) {
+        var status = await Permission.storage.request();
+        if (!status.isGranted) {
+          throw Exception('Permissão de armazenamento negada.');
+        }
+        dir = Directory('/storage/emulated/0/Download');
+      } else if (Platform.isIOS) {
+        dir = await getApplicationDocumentsDirectory();
+      }
+
+      if (dir == null) {
+        throw Exception('Diretório de armazenamento não encontrado.');
+      }
+
+      final filePath = '${dir.path}/$fileName';
+      final file = File(filePath);
+
+      if (await file.exists()) {
+        await file.delete();
+      }
+
+      final dio = Dio();
+      await dio.download(
+        url,
+        filePath,
+        onReceiveProgress: (received, total) {
+          if (total != -1) {
+            print('Progresso: ${(received / total * 100).toStringAsFixed(0)}%');
+          }
+        },
+      );
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                'Arquivo $fileName baixado com sucesso!\nLocal: $filePath')),
+      );
     } catch (e) {
-      print('***** Erro ao baixar arquivo: $e');
+      print('Erro ao baixar arquivo: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Erro ao baixar arquivo: $e')),
       );
-    }
-  }
-
-  Future<void> _renameFile(String oldName) async {
-    final newNameController = TextEditingController();
-    final newName = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Alterar nome do arquivo'),
-          content: TextField(
-            controller: newNameController,
-            decoration: const InputDecoration(hintText: 'Novo nome do arquivo'),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancelar'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, newNameController.text),
-              child: const Text('Salvar'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (newName != null && newName.isNotEmpty) {
-      try {
-        setState(() {
-          _isLoading = true;
-        });
-
-        await Supabase.instance.client.storage
-            .from('uploads')
-            .move(oldName, newName);
-
-        await _loadProfiles();
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Arquivo renomeado para $newName!')),
-        );
-      } catch (e) {
-        print('***** Erro ao renomear arquivo: $e');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erro ao renomear arquivo: $e')),
-        );
-      } finally {
-        setState(() {
-          _isLoading = false;
-        });
-      }
     }
   }
 
