@@ -461,7 +461,7 @@ class DocumentTab {
 }
 
 class DocumentTabController extends ChangeNotifier {
-  List<DocumentTab> _tabs = [
+  final List<DocumentTab> _tabs = [
     DocumentTab(title: 'Trabalhadores Fixos e Temporários'),
     DocumentTab(title: 'Holerites dos Últimos 3 Meses'),
     DocumentTab(title: 'Exames Médicos ASO'),

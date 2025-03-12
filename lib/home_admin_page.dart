@@ -66,7 +66,7 @@ class _HomeAdminPageState extends State<HomeAdminPage> {
                 .getPublicUrl(file['file_name']),
             'isImage': _isImageFile(file['file_name']),
             'size': file['size'],
-            'type': _getFileType(file['file_name']),
+            'type': file['file_type'],
             'user_id': userId,
           });
         }
